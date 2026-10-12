@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/bin/codex-peek-hook\" start",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%PLUGIN_ROOT%\\bin\\codex-peek-hook.ps1\" start",
+            "timeout": 60,
+            "statusMessage": "Starting Codex Peek image preview"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"$PLUGIN_ROOT/bin/codex-peek-hook\" stop",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"%PLUGIN_ROOT%\\bin\\codex-peek-hook.ps1\" stop",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

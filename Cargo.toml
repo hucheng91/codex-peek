@@ -1,0 +1,23 @@
+[package]
+name = "codex-peek"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Floating thumbnail preview for images pasted into OpenAI Codex CLI"
+repository = "https://github.com/hucheng91/codex-peek"
+rust-version = "1.88"
+
+[dependencies]
+tao = "0.34"
+wry = "0.53"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

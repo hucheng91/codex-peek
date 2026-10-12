@@ -1,0 +1,293 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+//! codex-peek: floating always-on-top preview of images pasted into Codex CLI.
+
+mod cli;
+mod control;
+mod matcher;
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
+
+use tao::dpi::{LogicalSize, PhysicalPosition};
+use tao::event::{Event, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::window::WindowBuilder;
+use wry::http::{header::CONTENT_TYPE, Response};
+use wry::WebViewBuilder;
+
+use cli::{Mode, Options};
+use control::Msg;
+use matcher::ImageList;
+
+const SMALL: (f64, f64) = (430.0, 140.0);
+const LARGE: (f64, f64) = (720.0, 540.0);
+
+#[derive(Debug)]
+enum UserEvent {
+    Tick,
+    Ipc(String),
+    Control(Msg),
+}
+
+fn main() {
+    let opts = match cli::parse(std::env::args().skip(1)) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: {e}\n\n{}", cli::HELP);
+            std::process::exit(2);
+        }
+    };
+    match opts.mode {
+        Mode::Help => print!("{}", cli::HELP),
+        Mode::Version => println!("codex-peek {}", env!("CARGO_PKG_VERSION")),
+        Mode::HookStart => hook_start(&opts),
+        Mode::HookStop => {
+            let id = read_session_id();
+            control::send(opts.port, &format!("end {id}"));
+        }
+        Mode::Run => run(opts),
+    }
+}
+
+fn read_session_id() -> String {
+    let mut s = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut s);
+    cli::session_id_from_hook_input(&s)
+}
+
+/// SessionStart hook: register with a running window, or spawn one detached.
+/// Always exits 0 quickly so it never blocks Codex.
+fn hook_start(opts: &Options) {
+    let id = read_session_id();
+    let msg = format!("start {id}");
+    if control::send(opts.port, &msg) {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut args = vec![
+        "--managed".to_string(),
+        "--port".into(),
+        opts.port.to_string(),
+    ];
+    for a in std::env::args().skip(1) {
+        if a != "--hook-start" {
+            args.push(a);
+        }
+    }
+    if control::spawn_detached(&exe, &args).is_err() {
+        return;
+    }
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_millis(150));
+        if control::send(opts.port, &msg) {
+            return;
+        }
+    }
+}
+
+fn state_file() -> Option<PathBuf> {
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    }?;
+    Some(base.join("codex-peek").join("position"))
+}
+
+fn load_position() -> Option<PhysicalPosition<i32>> {
+    let s = std::fs::read_to_string(state_file()?).ok()?;
+    let (x, y) = s.trim().split_once(',')?;
+    Some(PhysicalPosition::new(x.parse().ok()?, y.parse().ok()?))
+}
+
+fn save_position(p: PhysicalPosition<i32>) {
+    if let Some(f) = state_file() {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, format!("{},{}", p.x, p.y));
+    }
+}
+
+fn run(opts: Options) {
+    // Single instance: if one is already running, just register and leave.
+    let listener = match control::bind(opts.port) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("codex-peek is already running (port {}).", opts.port);
+            return;
+        }
+    };
+    let dir = opts.dir.clone().unwrap_or_else(matcher::default_dir);
+    let pattern = opts
+        .pattern
+        .clone()
+        .unwrap_or_else(|| matcher::DEFAULT_PATTERN.into());
+    let since = if opts.include_existing {
+        SystemTime::now() - Duration::from_secs(600)
+    } else {
+        SystemTime::now() - Duration::from_secs(1)
+    };
+    eprintln!("codex-peek: watching {} for {}", dir.display(), pattern);
+
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let proxy = event_loop.create_proxy();
+
+    let mut wb = WindowBuilder::new()
+        .with_title("Codex Peek")
+        .with_decorations(false)
+        .with_always_on_top(true)
+        .with_resizable(false)
+        .with_inner_size(LogicalSize::new(SMALL.0, SMALL.1));
+    if let Some(p) = load_position() {
+        wb = wb.with_position(p);
+    }
+    let window = wb.build(&event_loop).expect("create window");
+
+    let shown: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+    let shown_proto = Arc::clone(&shown);
+    let p_ipc = proxy.clone();
+
+    let builder = WebViewBuilder::new()
+        .with_html(include_str!("../ui/index.html"))
+        .with_transparent(true)
+        .with_ipc_handler(move |req| {
+            let _ = p_ipc.send_event(UserEvent::Ipc(req.body().clone()));
+        })
+        .with_custom_protocol("peek".into(), move |_id, req| {
+            let idx: Option<usize> = req.uri().path().trim_start_matches("/img/").parse().ok();
+            let path = idx.and_then(|i| shown_proto.lock().unwrap().get(i).cloned());
+            match path.and_then(|p| std::fs::read(p).ok()) {
+                Some(bytes) => Response::builder()
+                    .header(CONTENT_TYPE, "image/png")
+                    .body(bytes.into())
+                    .unwrap(),
+                None => Response::builder()
+                    .status(404)
+                    .body(Vec::new().into())
+                    .unwrap(),
+            }
+        });
+
+    #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd")))]
+    let webview = builder.build(&window).expect("create webview");
+    #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"))]
+    let webview = {
+        use tao::platform::unix::WindowExtUnix;
+        use wry::WebViewBuilderExtUnix;
+        builder
+            .build_gtk(window.default_vbox().unwrap())
+            .expect("create webview")
+    };
+
+    let p_ctl = proxy.clone();
+    control::serve(listener, move |m| {
+        let _ = p_ctl.send_event(UserEvent::Control(m));
+    });
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(400));
+        if proxy.send_event(UserEvent::Tick).is_err() {
+            break;
+        }
+    });
+
+    let url_base = if cfg!(windows) {
+        "http://peek.localhost"
+    } else {
+        "peek://localhost"
+    };
+    let mut list = ImageList::new();
+    let mut sessions: HashSet<String> = HashSet::new();
+    let mut had_session = false;
+    let mut generation = 0u64;
+    let mut pending_pos: Option<PhysicalPosition<i32>> = None;
+    let mut ready = false;
+
+    let render = move |list: &ImageList, generation: u64, webview: &wry::WebView| {
+        *shown.lock().unwrap() = list.entries().iter().map(|e| e.path.clone()).collect();
+        let items: Vec<serde_json::Value> = list
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                serde_json::json!({
+                    "n": e.number,
+                    "name": e.path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    "url": format!("{url_base}/img/{i}?g={generation}"),
+                })
+            })
+            .collect();
+        let _ = webview.evaluate_script(&format!("render({})", serde_json::Value::from(items)));
+    };
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        match event {
+            Event::UserEvent(UserEvent::Tick) => {
+                let now = Instant::now();
+                let mut changed = false;
+                if list.should_auto_reset(now, opts.idle_reset) {
+                    list.clear();
+                    generation += 1;
+                    changed = true;
+                }
+                for p in matcher::scan(&dir, &pattern, since) {
+                    changed |= list.add(p, now).is_some();
+                }
+                if changed && ready {
+                    render(&list, generation, &webview);
+                }
+                if let Some(p) = pending_pos.take() {
+                    save_position(p);
+                }
+            }
+            Event::UserEvent(UserEvent::Ipc(m)) => match m.as_str() {
+                "ready" => {
+                    ready = true;
+                    render(&list, generation, &webview);
+                }
+                "drag" => {
+                    let _ = window.drag_window();
+                }
+                "clear" => {
+                    list.clear();
+                    generation += 1;
+                    render(&list, generation, &webview);
+                }
+                "enlarge" => window.set_inner_size(LogicalSize::new(LARGE.0, LARGE.1)),
+                "shrink" => window.set_inner_size(LogicalSize::new(SMALL.0, SMALL.1)),
+                "close" => *control_flow = ControlFlow::Exit,
+                _ => {}
+            },
+            Event::UserEvent(UserEvent::Control(m)) => match m {
+                Msg::Start(id) => {
+                    had_session = true;
+                    sessions.insert(id);
+                    window.set_visible(true);
+                }
+                Msg::End(id) => {
+                    sessions.remove(&id);
+                    if opts.managed && had_session && sessions.is_empty() {
+                        *control_flow = ControlFlow::Exit;
+                    }
+                }
+                Msg::Ping => {}
+            },
+            Event::WindowEvent {
+                event: WindowEvent::Moved(p),
+                ..
+            } => pending_pos = Some(p),
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => *control_flow = ControlFlow::Exit,
+            _ => {}
+        }
+    });
+}

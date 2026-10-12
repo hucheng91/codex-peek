@@ -1,0 +1,11 @@
+{
+  "name": "codex-peek",
+  "interface": { "displayName": "Codex Peek" },
+  "plugins": [
+    {
+      "name": "codex-peek",
+      "source": { "source": "local", "path": "./plugin/codex-peek" },
+      "description": "Floating preview window for pasted images"
+    }
+  ]
+}

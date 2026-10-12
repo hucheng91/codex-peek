@@ -1,0 +1,13 @@
+{
+  "name": "codex-peek",
+  "version": "0.1.0",
+  "description": "Floating always-on-top thumbnails of images pasted into OpenAI Codex CLI ([Image #N] preview)",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/hucheng91/codex-peek.git" },
+  "homepage": "https://github.com/hucheng91/codex-peek#readme",
+  "keywords": ["codex", "codex-cli", "openai", "image-preview", "clipboard", "webview"],
+  "bin": { "codex-peek": "npm/codex-peek.js" },
+  "files": ["npm/codex-peek.js", "npm/platform.js", "README.md", "README.zh-CN.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test npm/" }
+}

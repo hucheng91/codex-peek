@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;font:12px -apple-system,"Segoe UI",system-ui,sans-serif;color:#e8e8e8;background:transparent;user-select:none}
+#root{height:100%;display:flex;flex-direction:column;background:rgba(28,28,30,.94);border:1px solid #444;border-radius:10px;overflow:hidden}
+#bar{display:flex;align-items:center;gap:6px;padding:4px 8px;background:#2c2c2e;cursor:move}
+#title{flex:1;font-weight:600;opacity:.85}
+button{font:inherit;color:#ddd;background:#3a3a3c;border:0;border-radius:5px;padding:2px 8px;cursor:pointer}
+button:hover{background:#4a4a4e}
+#strip{flex:1;display:flex;gap:6px;padding:6px;overflow-x:auto;align-items:center}
+.t{position:relative;flex:0 0 auto;height:100%;max-height:88px;aspect-ratio:1;border-radius:6px;overflow:hidden;background:#111;cursor:zoom-in;border:1px solid #555}
+.t img{width:100%;height:100%;object-fit:cover}
+.t span{position:absolute;left:0;bottom:0;right:0;background:rgba(0,0,0,.65);padding:1px 4px;font-size:11px}
+#empty{opacity:.55;padding:0 6px}
+#big{display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:9;flex-direction:column;cursor:zoom-out}
+#big img{flex:1;min-height:0;object-fit:contain;width:100%}
+#big div{padding:4px 8px;text-align:center}
+</style></head><body><div id="root">
+<div id="bar"><span id="title">Codex Peek</span><button id="clear" title="Clear list (numbering restarts at #1)">Clear</button><button id="close" title="Close">✕</button></div>
+<div id="strip"><span id="empty">Waiting for pasted images…</span></div>
+<div id="big"><img id="bigimg"><div id="biglabel"></div></div></div>
+<script>
+const send=m=>window.ipc.postMessage(m);
+document.getElementById('bar').addEventListener('mousedown',e=>{if(e.target.tagName!=='BUTTON'&&e.button===0)send('drag')});
+document.getElementById('clear').onclick=()=>send('clear');
+document.getElementById('close').onclick=()=>send('close');
+const big=document.getElementById('big');
+big.onclick=()=>{big.style.display='none';send('shrink')};
+window.render=(items)=>{
+  const s=document.getElementById('strip');s.innerHTML='';
+  document.getElementById('title').textContent='Codex Peek'+(items.length?` · ${items.length}`:'');
+  if(!items.length){s.innerHTML='<span id="empty">Waiting for pasted images…</span>';return}
+  for(const it of items){
+    const d=document.createElement('div');d.className='t';d.title=it.name;
+    d.innerHTML=`<img src="${it.url}"><span>Image #${it.n}</span>`;
+    d.onclick=()=>{document.getElementById('bigimg').src=it.url;document.getElementById('biglabel').textContent=`Image #${it.n} — ${it.name}`;big.style.display='flex';send('enlarge')};
+    s.appendChild(d);
+  }
+  s.scrollLeft=s.scrollWidth;
+};
+send('ready');
+</script></body></html>
