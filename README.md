@@ -12,10 +12,6 @@ Codex's TUI shows pasted images only as `[Image #1]`, `[Image #2]`… placeholde
 </p>
 
 <p align="center">
-  <video src="https://raw.githubusercontent.com/hucheng91/codex-peek/main/docs/demo-real-codex.mp4" controls muted width="900"></video>
-</p>
-
-<p align="center">
   <img src="docs/screenshot.png" width="450" alt="codex-peek screenshot">
   &nbsp;
   <img src="docs/demo.gif" width="450" alt="codex-peek demo">

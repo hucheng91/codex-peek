@@ -12,10 +12,6 @@ Codex 的终端界面里，粘贴的图片只显示成 `[Image #1]`、`[Image #2
 </p>
 
 <p align="center">
-  <video src="https://raw.githubusercontent.com/hucheng91/codex-peek/main/docs/demo-real-codex.mp4" controls muted width="900"></video>
-</p>
-
-<p align="center">
   <img src="docs/screenshot.png" width="450" alt="codex-peek 截图">
   &nbsp;
   <img src="docs/demo.gif" width="450" alt="codex-peek 演示">
