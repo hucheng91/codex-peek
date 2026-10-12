@@ -1,33 +1,56 @@
 //! Single-instance + session lifecycle over a localhost TCP port.
-//! Protocol: one line per connection: `start <id>`, `end <id>`, `ping`.
+//! Protocol: one line per connection:
+//!   `start <id> [pid]`, `end <id>`, `ping`, `claimed`, `attach <id> [pid]`.
+//! `attach` keeps the connection open; the session ends when it closes.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::time::Duration;
 
 fn addr(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-/// Sends a command to a running instance. Returns false if none is listening.
-pub fn send(port: u16, line: &str) -> bool {
-    let Ok(mut s) = TcpStream::connect_timeout(&addr(port), Duration::from_millis(300)) else {
-        return false;
-    };
-    let _ = s.set_read_timeout(Some(Duration::from_secs(1)));
-    if writeln!(s, "{line}").is_err() {
-        return false;
-    }
+/// Sends a command and returns the reply line (e.g. "ok", "ok 1 2").
+pub fn query(port: u16, line: &str) -> Option<String> {
+    let mut s = TcpStream::connect_timeout(&addr(port), Duration::from_millis(300)).ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    writeln!(s, "{line}").ok()?;
     let mut reply = String::new();
-    BufReader::new(s).read_line(&mut reply).is_ok() && reply.trim() == "ok"
+    BufReader::new(s).read_line(&mut reply).ok()?;
+    let reply = reply.trim().to_string();
+    reply.starts_with("ok").then_some(reply)
+}
+
+/// Sends a command. Returns false if no instance is listening.
+pub fn send(port: u16, line: &str) -> bool {
+    query(port, line).is_some()
+}
+
+/// Pids already claimed by sessions of the running window.
+pub fn claimed(port: u16) -> Vec<u32> {
+    query(port, "claimed")
+        .map(|r| {
+            r.split_whitespace()
+                .skip(1)
+                .filter_map(|p| p.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Registers `id` on a connection that stays open; when this process exits
 /// (even if killed), the OS closes the socket and the window drops the session.
-pub fn attach(port: u16, id: &str) -> Option<TcpStream> {
+pub fn attach(port: u16, id: &str, pid: Option<u32>) -> Option<TcpStream> {
     let mut s = TcpStream::connect_timeout(&addr(port), Duration::from_millis(300)).ok()?;
-    s.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
-    writeln!(s, "attach {id}").ok()?;
+    s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    writeln!(
+        s,
+        "attach {id}{}",
+        pid.map(|p| format!(" {p}")).unwrap_or_default()
+    )
+    .ok()?;
     let mut reply = [0u8; 3];
     std::io::Read::read_exact(&mut s, &mut reply).ok()?;
     s.set_read_timeout(None).ok()?;
@@ -38,53 +61,63 @@ pub fn bind(port: u16) -> std::io::Result<TcpListener> {
     TcpListener::bind(addr(port))
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Msg {
-    Start(String),
+    Start(String, Option<u32>),
     End(String),
     Ping,
+    Claimed,
     /// Like Start, but the session ends when the connection closes.
-    Attach(String),
+    Attach(String, Option<u32>),
 }
 
 pub fn parse_line(line: &str) -> Option<Msg> {
-    let mut it = line.trim().splitn(2, ' ');
-    match (it.next()?, it.next()) {
-        ("start", Some(id)) => Some(Msg::Start(id.to_string())),
-        ("end", Some(id)) => Some(Msg::End(id.to_string())),
-        ("attach", Some(id)) => Some(Msg::Attach(id.to_string())),
+    let mut it = line.split_whitespace();
+    let cmd = it.next()?;
+    let id = it.next().map(str::to_string);
+    let pid = match it.next() {
+        Some(p) => Some(p.parse::<u32>().ok()?),
+        None => None,
+    };
+    if it.next().is_some() {
+        return None;
+    }
+    match (cmd, id) {
+        ("start", Some(id)) => Some(Msg::Start(id, pid)),
+        ("attach", Some(id)) => Some(Msg::Attach(id, pid)),
+        ("end", Some(id)) if pid.is_none() => Some(Msg::End(id)),
         ("ping", None) => Some(Msg::Ping),
+        ("claimed", None) => Some(Msg::Claimed),
         _ => None,
     }
 }
 
-/// Serves connections forever, forwarding parsed messages to `on_msg`.
-/// `attach <id>` is reported as `Start(id)` and, once the peer disconnects, `End(id)`.
-pub fn serve(listener: TcpListener, on_msg: impl FnMut(Msg) + Send + 'static) {
-    let on_msg = std::sync::Arc::new(std::sync::Mutex::new(on_msg));
+/// Serves connections forever. `handler` returns the reply line for each
+/// message; `attach` is delivered as `Start` and, on disconnect, `End`.
+pub fn serve(listener: TcpListener, handler: impl Fn(Msg) -> String + Send + Sync + 'static) {
+    let handler = Arc::new(handler);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let on_msg = std::sync::Arc::clone(&on_msg);
+            let handler = Arc::clone(&handler);
             std::thread::spawn(move || {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                 let mut line = String::new();
                 let mut r = BufReader::new(&stream);
                 if r.read_line(&mut line).is_err() {
                     return;
                 }
-                let emit = |m: Msg| (on_msg.lock().unwrap())(m);
                 match parse_line(&line) {
-                    Some(Msg::Attach(id)) => {
-                        emit(Msg::Start(id.clone()));
+                    Some(Msg::Attach(id, pid)) => {
+                        handler(Msg::Start(id.clone(), pid));
                         let _ = (&stream).write_all(b"ok\n");
                         let _ = stream.set_read_timeout(None);
                         let mut sink = Vec::new();
                         let _ = std::io::Read::read_to_end(&mut r, &mut sink);
-                        emit(Msg::End(id));
+                        handler(Msg::End(id));
                     }
                     Some(m) => {
-                        emit(m);
-                        let _ = (&stream).write_all(b"ok\n");
+                        let reply = handler(m);
+                        let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
                     }
                     None => {}
                 }
@@ -106,6 +139,7 @@ pub fn spawn_detached(exe: &std::path::Path, args: &[String]) -> std::io::Result
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe.
         unsafe {
             c.pre_exec(|| {
                 libc::setsid();
@@ -135,13 +169,26 @@ pub fn spawn_detached(exe: &std::path::Path, args: &[String]) -> std::io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Mutex};
 
     #[test]
     fn parses() {
-        assert_eq!(parse_line("start abc\n"), Some(Msg::Start("abc".into())));
+        assert_eq!(
+            parse_line("start abc\n"),
+            Some(Msg::Start("abc".into(), None))
+        );
+        assert_eq!(
+            parse_line("start abc 42"),
+            Some(Msg::Start("abc".into(), Some(42)))
+        );
+        assert_eq!(
+            parse_line("attach x 7"),
+            Some(Msg::Attach("x".into(), Some(7)))
+        );
         assert_eq!(parse_line("end x"), Some(Msg::End("x".into())));
         assert_eq!(parse_line("ping"), Some(Msg::Ping));
+        assert_eq!(parse_line("claimed"), Some(Msg::Claimed));
+        assert_eq!(parse_line("start abc notapid"), None);
         assert_eq!(parse_line("hello"), None);
     }
 
@@ -150,17 +197,28 @@ mod tests {
         let l = bind(0).unwrap();
         let port = l.local_addr().unwrap().port();
         let (tx, rx) = mpsc::channel();
-        serve(l, move |m| tx.send(m).unwrap());
-        assert!(send(port, "start s1"));
+        let tx = Mutex::new(tx);
+        serve(l, move |m| {
+            let reply = if m == Msg::Claimed {
+                "ok 3 4".into()
+            } else {
+                "ok".into()
+            };
+            tx.lock().unwrap().send(m).unwrap();
+            reply
+        });
+        assert!(send(port, "start s1 9"));
         assert_eq!(
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Msg::Start("s1".into())
+            Msg::Start("s1".into(), Some(9))
         );
         assert!(!send(port, "nonsense"));
-        let conn = attach(port, "s2").expect("attach");
+        assert_eq!(claimed(port), vec![3, 4]);
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let conn = attach(port, "s2", None).expect("attach");
         assert_eq!(
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Msg::Start("s2".into())
+            Msg::Start("s2".into(), None)
         );
         drop(conn);
         assert_eq!(

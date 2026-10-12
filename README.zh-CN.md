@@ -48,7 +48,9 @@ codex plugin add codex-peek@codex-peek
 1. **MCP 服务器（主要方式）**：Codex 在会话启动时就会启动插件的 MCP 服务器，退出时关闭它。插件运行 `node bin/codex-peek-mcp.js`，它会找到或下载二进制，再运行 `codex-peek --mcp`。这个进程是一个不提供任何工具的最小 MCP 服务器，负责打开窗口，并和窗口保持一个本地连接。Codex 退出时连接断开，窗口随之关闭。需要 PATH 里有 `node`（通过 npm 安装的 Codex 都有），不需要信任确认。
 2. **Hook（备用方式）**：需要先执行一次 `/hooks` 信任插件的 hook。注意 Codex 要到**第一次提交提示词时**才触发 SessionStart，所以只用 hook 时，窗口要在第一次发送后才出现，届时会补上最近 10 分钟内的图片。
 
-可以用环境变量 `CODEX_PEEK_ARGS` 传参数，例如 `--idle 120`；用 `CODEX_PEEK_BIN` 指定本地编译的二进制。
+**窗口什么时候关闭**：Codex 默认使用一个共享的后台进程 `codex app-server`。插件的 MCP 服务器由它管理，而且它在终端界面退出后还会继续运行。所以 codex-peek 注册会话时，会找到对应的 Codex 终端进程：先沿父进程向上找，遇到 `app-server` 就停止；找不到时，取最新启动、且还没被其他会话认领的 `codex` 终端进程。窗口每秒检查一次这个进程，所有会话都结束后自动关闭（多个会话按引用计数）。测试中按 Ctrl+C 后约 1 秒关闭；输入 `/quit` 后，在 Codex 退出完成时关闭，也就是几秒之后。MCP 连接断开或 SessionEnd hook 触发也会结束会话。兜底规则：如果某个会话找不到对应进程，那么在 10 秒内都没有任何 Codex 终端在运行时，这个会话结束。
+
+ `CODEX_PEEK_ARGS` 传参数，例如 `--idle 120`；用 `CODEX_PEEK_BIN` 指定本地编译的二进制。
 
 ### 方式二：手动运行
 
@@ -66,7 +68,7 @@ cargo build --release && ./target/release/codex-peek
 - 只能捕获**剪贴板粘贴**的图片。通过文件路径附加的图片（`codex -i`、拖入文件）和 **URL 图片**不会经过 `codex-clipboard-*.png`，所以不会显示。
 - WSL 下需要加 `--pattern "tmp*.png"`，这样也可能匹配到其他程序的临时 PNG。
 - 二进制还没有签名。
-- 如果 Codex 崩溃、没有触发 SessionEnd，窗口会一直开着，点 ✕ 关闭即可。
+- 多个 Codex 会话同时运行时共用一个窗口，编号会跨会话累加，而每个会话的输入框都从 `[Image #1]` 开始。切换会话时请点 Clear。
 - 已在 Linux/X11 上用 codex-cli 0.162.1 完整测试。MCP 方式需要 `node`；hook 方式需要先通过 `/hooks` 信任，而且第一次提交提示词后才会启动。
 
 ## 插件能做和不能做的事

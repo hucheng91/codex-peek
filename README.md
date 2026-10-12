@@ -61,7 +61,13 @@ The plugin ties the window to the Codex session in two ways:
 1. **MCP server (main path).** Codex starts plugin MCP servers as soon as a session boots and stops them when it exits. The plugin's `.mcp.json` runs `node bin/codex-peek-mcp.js`, which finds or downloads the native binary and runs `codex-peek --mcp`. That process is a minimal MCP server with no tools. It opens the window (detached, shared between sessions) and holds a localhost socket open to it. When Codex exits, or kills the server, the socket closes and the window closes. It needs `node` on PATH, which npm installs of Codex already have. No trust prompt is needed.
 2. **Lifecycle hooks (fallback, e.g. without node).** **SessionStart** runs `bin/codex-peek-hook start` and **SessionEnd** runs `... stop`. Codex skips plugin hooks until you trust them (run `/hooks` once). Codex also runs SessionStart **lazily, on the first submitted turn** (`codex-rs/core/src/session/turn.rs` → `run_pending_session_start_hooks`). So in hook-only mode the window first appears after your first prompt, and it then picks up images from the last 10 minutes. Codex kills a hook's whole process tree when the hook finishes, so the window leaves it: it calls `setsid` on Unix, and on Windows it uses `CREATE_BREAKAWAY_FROM_JOB`, which Codex's job object allows.
 
-With several Codex sessions open, they share one window, and it closes when the last session ends.
+**When the window closes.** With Codex's default settings, the TUI talks to a shared background `codex app-server` daemon. The daemon owns plugin MCP servers and **outlives the TUI**, so "MCP server stopped" doesn't mean "session ended". So when codex-peek registers a session, it also finds the **Codex TUI process** for it:
+
+1. It walks up its own parent chain. In embedded mode the MCP server and hooks are descendants of the TUI. The walk stops at an `app-server` process, because a shared daemon's parent is whichever TUI started it, not necessarily ours.
+2. Failing that, it takes the youngest terminal-attached `codex` process not already claimed by another session.
+
+The window checks that pid every second and closes once the last watched session is gone (reference counted across concurrent sessions). In tests it closed about 1 s after Ctrl+C. After `/quit` it closed when Codex finished shutting down, a few seconds later. Two extra signals also end a session: the MCP server's socket closing, and the SessionEnd hook. Safe fallback: a session whose TUI couldn't be identified ends once no Codex TUI has been running for about 10 s. You can always close the window with ✕. Process lookup uses `ps` on macOS and Linux, and on Windows a PowerShell/CIM query plus `OpenProcess`/`WaitForSingleObject`. Codex passes no session or TUI pid to MCP servers or hooks: there is no such environment variable in `codex-rs`.
+
 
 To pass options, set `CODEX_PEEK_ARGS`, e.g. `export CODEX_PEEK_ARGS="--idle 120"`. To use a local build, set `CODEX_PEEK_BIN=/path/to/codex-peek`.
 
@@ -90,7 +96,8 @@ cargo build --release && ./target/release/codex-peek
 - Only **clipboard pastes** are captured. Images attached by file path (`codex -i file.png`, dragging a file, typing a path) and **URL images** never go through `codex-clipboard-*.png`, so they don't show up.
 - **WSL:** the PowerShell fallback writes `tmpXXXX.png` files to the Windows temp dir. Use `--pattern "tmp*.png"` (this also matches other apps' temp PNGs).
 - macOS/Windows binaries are not code-signed yet. The plugin downloads them with `curl`/`Invoke-WebRequest`, which don't add the quarantine flag, but a binary downloaded with a browser may need `xattr -d com.apple.quarantine`.
-- If Codex crashes and SessionEnd never runs, the window stays open. Close it with ✕.
+- With **several concurrent Codex sessions**, they share one window, and its numbering continues across sessions (each session's composer starts at `[Image #1]`). Press Clear when switching.
+- If two Codex TUIs start at almost the same moment in shared-daemon mode, the "youngest unclaimed TUI" guess can pair them the other way round. Both windows still close correctly once both sessions have exited.
 - Tested end to end with codex-cli 0.162.1 on Linux/X11. The MCP path needs `node` on PATH. The hook fallback needs `/hooks` trust and only starts on the first prompt.
 - On Linux without a compositor, the rounded window corners render as white squares.
 

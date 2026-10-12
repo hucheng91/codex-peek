@@ -1,6 +1,6 @@
 {
   "name": "codex-peek",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Floating always-on-top thumbnails of images pasted into OpenAI Codex CLI ([Image #N] preview)",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/hucheng91/codex-peek.git" },

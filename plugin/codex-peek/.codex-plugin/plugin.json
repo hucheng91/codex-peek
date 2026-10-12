@@ -1,6 +1,6 @@
 {
   "name": "codex-peek",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shows a floating thumbnail window of pasted images ([Image #N]) while a Codex session runs.",
   "author": {
     "name": "hucheng91"

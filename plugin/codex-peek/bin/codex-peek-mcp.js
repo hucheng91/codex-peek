@@ -9,7 +9,7 @@ const path = require('path');
 const https = require('https');
 const { spawn } = require('child_process');
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const REPO = 'hucheng91/codex-peek';
 
 function asset() {

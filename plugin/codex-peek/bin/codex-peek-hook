@@ -2,7 +2,7 @@
 # Codex hook entry (macOS/Linux). Usage: codex-peek-hook start|stop  (hook JSON on stdin)
 # Finds or downloads the codex-peek binary, then forwards the hook to it.
 # Never fails the hook: any problem exits 0 so Codex is not disturbed.
-VERSION=0.1.0
+VERSION=0.1.1
 REPO=hucheng91/codex-peek
 ACTION=${1:-start}
 DATA=${PLUGIN_DATA:-${TMPDIR:-/tmp}/codex-peek-plugin}

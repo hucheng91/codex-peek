@@ -1,7 +1,7 @@
 # Codex hook entry (Windows). Usage: codex-peek-hook.ps1 start|stop  (hook JSON on stdin)
 param([string]$Action = 'start')
 $ErrorActionPreference = 'SilentlyContinue'
-$Version = '0.1.0'
+$Version = '0.1.1'
 $Repo = 'hucheng91/codex-peek'
 $Asset = 'codex-peek-windows-x64.exe'
 $Data = if ($env:PLUGIN_DATA) { $env:PLUGIN_DATA } else { Join-Path $env:TEMP 'codex-peek-plugin' }

@@ -5,8 +5,9 @@ mod cli;
 mod control;
 mod matcher;
 mod mcp;
+mod procs;
+mod sessions;
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -21,6 +22,7 @@ use wry::WebViewBuilder;
 use cli::{Mode, Options};
 use control::Msg;
 use matcher::ImageList;
+use sessions::Sessions;
 
 const SMALL: (f64, f64) = (430.0, 140.0);
 const LARGE: (f64, f64) = (720.0, 540.0);
@@ -29,7 +31,8 @@ const LARGE: (f64, f64) = (720.0, 540.0);
 enum UserEvent {
     Tick,
     Ipc(String),
-    Control(Msg),
+    Show,
+    Quit,
 }
 
 fn main() {
@@ -65,7 +68,12 @@ fn hook_start(opts: &Options) {
     let id = read_session_id();
     // Codex runs SessionStart lazily (on the first turn), so images pasted into
     // the first prompt already exist: include recent files when we launch.
-    ensure_window(opts, &format!("start {id}"), &["--existing"]);
+    let pid = find_tui(opts);
+    let msg = format!(
+        "start {id}{}",
+        pid.map(|p| format!(" {p}")).unwrap_or_default()
+    );
+    ensure_window(opts, &msg, &["--existing"]);
 }
 
 /// Sends `msg` to the running window, launching one (detached) if needed.
@@ -105,9 +113,11 @@ fn run_mcp(opts: &Options) {
     use std::io::{BufRead, Write};
     let id = format!("mcp-{}", std::process::id());
     ensure_window(opts, "ping", &[]);
-    // Held open for our whole lifetime: Codex may kill MCP servers outright on
-    // exit, and the closed socket is what tells the window this session ended.
-    let _link = control::attach(opts.port, &id);
+    // Two exit signals: (1) the Codex TUI pid, watched by the window, which
+    // matters when a shared `codex app-server` daemon owns this MCP server and
+    // outlives the TUI; (2) this socket, which closes if Codex kills us.
+    let pid = find_tui(opts);
+    let _link = control::attach(opts.port, &id, pid);
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -117,6 +127,13 @@ fn run_mcp(opts: &Options) {
             let _ = out.flush();
         }
     }
+}
+
+/// Identifies the Codex TUI for this session (see `procs`), skipping TUIs
+/// already claimed by other sessions of the running window.
+fn find_tui(opts: &Options) -> Option<u32> {
+    let claimed = control::claimed(opts.port);
+    procs::choose_tui(&procs::list(), std::process::id(), &claimed)
 }
 
 fn state_file() -> Option<PathBuf> {
@@ -216,10 +233,52 @@ fn run(opts: Options) {
             .expect("create webview")
     };
 
+    let registry: Arc<Mutex<Sessions>> = Arc::default();
+    let reg = Arc::clone(&registry);
     let p_ctl = proxy.clone();
     control::serve(listener, move |m| {
-        let _ = p_ctl.send_event(UserEvent::Control(m));
+        let mut s = reg.lock().unwrap();
+        match m {
+            Msg::Start(id, pid) => {
+                s.start(&id, pid);
+                let _ = p_ctl.send_event(UserEvent::Show);
+            }
+            Msg::End(id) => s.end(&id),
+            Msg::Claimed => {
+                let pids: Vec<String> = s.claimed().iter().map(u32::to_string).collect();
+                return format!("ok {}", pids.join(" ")).trim_end().to_string();
+            }
+            Msg::Ping | Msg::Attach(..) => {}
+        }
+        "ok".into()
     });
+    // Lifecycle thread: reap sessions whose Codex TUI exited, fall back to
+    // "no Codex TUI running at all" for sessions without a known pid, and
+    // quit (when launched by Codex) once the last session is gone.
+    if opts.managed {
+        let reg = Arc::clone(&registry);
+        let p_life = proxy.clone();
+        std::thread::spawn(move || {
+            let mut n = 0u32;
+            loop {
+                std::thread::sleep(procs::POLL);
+                n += 1;
+                let pidless = {
+                    let mut s = reg.lock().unwrap();
+                    s.reap_dead(procs::alive);
+                    s.has_pidless()
+                };
+                if pidless && n.is_multiple_of(5) {
+                    let any = procs::any_tui(&procs::list());
+                    reg.lock().unwrap().check_orphans(any);
+                }
+                if reg.lock().unwrap().all_ended() {
+                    let _ = p_life.send_event(UserEvent::Quit);
+                    break;
+                }
+            }
+        });
+    }
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(400));
         if proxy.send_event(UserEvent::Tick).is_err() {
@@ -233,8 +292,6 @@ fn run(opts: Options) {
         "peek://localhost"
     };
     let mut list = ImageList::new();
-    let mut sessions: HashSet<String> = HashSet::new();
-    let mut had_session = false;
     let mut generation = 0u64;
     let mut pending_pos: Option<PhysicalPosition<i32>> = None;
     let mut ready = false;
@@ -322,20 +379,8 @@ fn run(opts: Options) {
                 "close" => *control_flow = ControlFlow::Exit,
                 _ => {}
             },
-            Event::UserEvent(UserEvent::Control(m)) => match m {
-                Msg::Start(id) => {
-                    had_session = true;
-                    sessions.insert(id);
-                    window.set_visible(true);
-                }
-                Msg::End(id) => {
-                    sessions.remove(&id);
-                    if opts.managed && had_session && sessions.is_empty() {
-                        *control_flow = ControlFlow::Exit;
-                    }
-                }
-                Msg::Ping | Msg::Attach(_) => {}
-            },
+            Event::UserEvent(UserEvent::Show) => window.set_visible(true),
+            Event::UserEvent(UserEvent::Quit) => *control_flow = ControlFlow::Exit,
             Event::WindowEvent {
                 event: WindowEvent::Moved(p),
                 ..
