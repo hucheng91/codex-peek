@@ -2,10 +2,19 @@
   "name": "codex-peek",
   "version": "0.1.0",
   "description": "Shows a floating thumbnail window of pasted images ([Image #N]) while a Codex session runs.",
-  "author": { "name": "hucheng91" },
+  "author": {
+    "name": "hucheng91"
+  },
   "homepage": "https://github.com/hucheng91/codex-peek",
   "license": "MIT",
-  "keywords": ["image", "preview", "clipboard"],
+  "keywords": [
+    "image",
+    "preview",
+    "clipboard"
+  ],
   "hooks": "./hooks/hooks.json",
-  "interface": { "displayName": "Codex Peek" }
+  "interface": {
+    "displayName": "Codex Peek"
+  },
+  "mcpServers": "./.mcp.json"
 }

@@ -4,6 +4,7 @@
 mod cli;
 mod control;
 mod matcher;
+mod mcp;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -47,6 +48,7 @@ fn main() {
             let id = read_session_id();
             control::send(opts.port, &format!("end {id}"));
         }
+        Mode::Mcp => run_mcp(&opts),
         Mode::Run => run(opts),
     }
 }
@@ -61,8 +63,14 @@ fn read_session_id() -> String {
 /// Always exits 0 quickly so it never blocks Codex.
 fn hook_start(opts: &Options) {
     let id = read_session_id();
-    let msg = format!("start {id}");
-    if control::send(opts.port, &msg) {
+    // Codex runs SessionStart lazily (on the first turn), so images pasted into
+    // the first prompt already exist: include recent files when we launch.
+    ensure_window(opts, &format!("start {id}"), &["--existing"]);
+}
+
+/// Sends `msg` to the running window, launching one (detached) if needed.
+fn ensure_window(opts: &Options, msg: &str, extra: &[&str]) {
+    if control::send(opts.port, msg) {
         return;
     }
     let Ok(exe) = std::env::current_exe() else {
@@ -74,17 +82,39 @@ fn hook_start(opts: &Options) {
         opts.port.to_string(),
     ];
     for a in std::env::args().skip(1) {
-        if a != "--hook-start" {
+        if !matches!(a.as_str(), "--hook-start" | "--mcp" | "--existing") {
             args.push(a);
         }
     }
+    args.extend(extra.iter().map(|s| s.to_string()));
     if control::spawn_detached(&exe, &args).is_err() {
         return;
     }
     for _ in 0..20 {
         std::thread::sleep(Duration::from_millis(150));
-        if control::send(opts.port, &msg) {
+        if control::send(opts.port, msg) {
             return;
+        }
+    }
+}
+
+/// Minimal stdio MCP server. Codex starts plugin MCP servers when the session
+/// boots and closes stdin when it exits, which gives an exact lifecycle for the
+/// preview window (earlier than the SessionStart hook, which waits for a turn).
+fn run_mcp(opts: &Options) {
+    use std::io::{BufRead, Write};
+    let id = format!("mcp-{}", std::process::id());
+    ensure_window(opts, "ping", &[]);
+    // Held open for our whole lifetime: Codex may kill MCP servers outright on
+    // exit, and the closed socket is what tells the window this session ended.
+    let _link = control::attach(opts.port, &id);
+    let stdin = std::io::stdin();
+    let mut out = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        if let Some(reply) = mcp::respond(&line) {
+            let _ = writeln!(out, "{reply}");
+            let _ = out.flush();
         }
     }
 }
@@ -143,7 +173,7 @@ fn run(opts: Options) {
         .with_title("Codex Peek")
         .with_decorations(false)
         .with_always_on_top(true)
-        .with_resizable(false)
+        .with_resizable(true)
         .with_inner_size(LogicalSize::new(SMALL.0, SMALL.1));
     if let Some(p) = load_position() {
         wb = wb.with_position(p);
@@ -208,6 +238,8 @@ fn run(opts: Options) {
     let mut generation = 0u64;
     let mut pending_pos: Option<PhysicalPosition<i32>> = None;
     let mut ready = false;
+    let mut restore_pos: Option<PhysicalPosition<i32>> = None;
+    let mut suppress_save = false;
 
     let render = move |list: &ImageList, generation: u64, webview: &wry::WebView| {
         *shown.lock().unwrap() = list.entries().iter().map(|e| e.path.clone()).collect();
@@ -260,8 +292,33 @@ fn run(opts: Options) {
                     generation += 1;
                     render(&list, generation, &webview);
                 }
-                "enlarge" => window.set_inner_size(LogicalSize::new(LARGE.0, LARGE.1)),
-                "shrink" => window.set_inner_size(LogicalSize::new(SMALL.0, SMALL.1)),
+                "enlarge" => {
+                    // Grow in place, but shift so the large view stays on screen.
+                    let pos = window.outer_position().ok();
+                    restore_pos = pos;
+                    if let (Some(p), Some(mon)) = (pos, window.current_monitor()) {
+                        let scale = window.scale_factor();
+                        let (mp, ms) = (mon.position(), mon.size());
+                        let w = (LARGE.0 * scale) as i32;
+                        let h = (LARGE.1 * scale) as i32;
+                        let x = p.x.min(mp.x + ms.width as i32 - w).max(mp.x);
+                        let y = p.y.min(mp.y + ms.height as i32 - h).max(mp.y);
+                        window.set_inner_size(LogicalSize::new(LARGE.0, LARGE.1));
+                        if (x, y) != (p.x, p.y) {
+                            suppress_save = true;
+                            window.set_outer_position(PhysicalPosition::new(x, y));
+                        }
+                    } else {
+                        window.set_inner_size(LogicalSize::new(LARGE.0, LARGE.1));
+                    }
+                }
+                "shrink" => {
+                    window.set_inner_size(LogicalSize::new(SMALL.0, SMALL.1));
+                    if let Some(p) = restore_pos.take() {
+                        window.set_outer_position(p);
+                    }
+                    suppress_save = false;
+                }
                 "close" => *control_flow = ControlFlow::Exit,
                 _ => {}
             },
@@ -277,12 +334,16 @@ fn run(opts: Options) {
                         *control_flow = ControlFlow::Exit;
                     }
                 }
-                Msg::Ping => {}
+                Msg::Ping | Msg::Attach(_) => {}
             },
             Event::WindowEvent {
                 event: WindowEvent::Moved(p),
                 ..
-            } => pending_pos = Some(p),
+            } => {
+                if !suppress_save {
+                    pending_pos = Some(p)
+                }
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..

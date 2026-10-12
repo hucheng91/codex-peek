@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "codex-peek": {
+      "command": "node",
+      "args": [
+        "bin/codex-peek-mcp.js"
+      ],
+      "cwd": ".",
+      "startup_timeout_sec": 60,
+      "env_vars": [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "TEMP",
+        "TMP",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "CODEX_PEEK_BIN",
+        "CODEX_PEEK_ARGS"
+      ]
+    }
+  }
+}

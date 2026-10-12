@@ -30,7 +30,7 @@ window.render=(items)=>{
   document.getElementById('title').textContent='Codex Peek'+(items.length?` · ${items.length}`:'');
   if(!items.length){s.innerHTML='<span id="empty">Waiting for pasted images…</span>';return}
   for(const it of items){
-    const d=document.createElement('div');d.className='t';d.title=it.name;
+    const d=document.createElement('div');d.className='t';
     d.innerHTML=`<img src="${it.url}"><span>Image #${it.n}</span>`;
     d.onclick=()=>{document.getElementById('bigimg').src=it.url;document.getElementById('biglabel').textContent=`Image #${it.n} — ${it.name}`;big.style.display='flex';send('enlarge')};
     s.appendChild(d);

@@ -10,6 +10,8 @@ Codex's TUI shows pasted images only as `[Image #1]`, `[Image #2]`… placeholde
 
 ![demo](docs/demo.gif)
 
+▶️ **[Video: codex-peek with the real Codex CLI 0.162.1 TUI](docs/demo-real-codex.mp4)** (28 s). It shows the window opening when the session starts, three Ctrl+V pastes, enlarge, Clear, and the window closing on `/quit`.
+
 - Native OS webview (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux) via [wry](https://github.com/tauri-apps/wry) + [tao](https://github.com/tauri-apps/tao). No Electron; the binary is **about 0.8 MB** (Linux x64 release build, measured), and macOS/Windows builds are in the same range (see the CI "Binary size" step).
 - Numbered thumbnails (`Image #1..N`) in arrival order; click to enlarge, click again to go back.
 - **Clear** button (numbering restarts at #1), optional auto-clear after idle (`--idle`).
@@ -49,10 +51,12 @@ codex plugin marketplace add hucheng91/codex-peek
 codex plugin add codex-peek@codex-peek
 ```
 
-Then start `codex` and run `/hooks` once to review and **trust** the two plugin hooks (Codex skips plugin hooks until you trust them). From then on:
+The plugin ties the window to the Codex session in two ways:
 
-- **SessionStart** runs `plugin/codex-peek/bin/codex-peek-hook start`. On first run it downloads the right binary from GitHub Releases into the plugin data dir, then starts the window **detached**. Codex kills a hook's whole process tree when the hook finishes, so the window has to leave it: it calls `setsid` on Unix, and on Windows it uses `CREATE_BREAKAWAY_FROM_JOB`, which Codex's job object allows.
-- **SessionEnd** sends `end <session>` to the window over `127.0.0.1:47821`. With several Codex sessions open, they share one window, and it closes when the last session ends.
+1. **MCP server (main path).** Codex starts plugin MCP servers as soon as a session boots and stops them when it exits. The plugin's `.mcp.json` runs `node bin/codex-peek-mcp.js`, which finds or downloads the native binary and runs `codex-peek --mcp`. That process is a minimal MCP server with no tools. It opens the window (detached, shared between sessions) and holds a localhost socket open to it. When Codex exits, or kills the server, the socket closes and the window closes. It needs `node` on PATH, which npm installs of Codex already have. No trust prompt is needed.
+2. **Lifecycle hooks (fallback, e.g. without node).** **SessionStart** runs `bin/codex-peek-hook start` and **SessionEnd** runs `... stop`. Codex skips plugin hooks until you trust them (run `/hooks` once). Codex also runs SessionStart **lazily, on the first submitted turn** (`codex-rs/core/src/session/turn.rs` → `run_pending_session_start_hooks`). So in hook-only mode the window first appears after your first prompt, and it then picks up images from the last 10 minutes. Codex kills a hook's whole process tree when the hook finishes, so the window leaves it: it calls `setsid` on Unix, and on Windows it uses `CREATE_BREAKAWAY_FROM_JOB`, which Codex's job object allows.
+
+With several Codex sessions open, they share one window, and it closes when the last session ends.
 
 To pass options, set `CODEX_PEEK_ARGS`, e.g. `export CODEX_PEEK_ARGS="--idle 120"`. To use a local build, set `CODEX_PEEK_BIN=/path/to/codex-peek`.
 
@@ -82,7 +86,8 @@ cargo build --release && ./target/release/codex-peek
 - **WSL:** the PowerShell fallback writes `tmpXXXX.png` files to the Windows temp dir. Use `--pattern "tmp*.png"` (this also matches other apps' temp PNGs).
 - macOS/Windows binaries are not code-signed yet. The plugin downloads them with `curl`/`Invoke-WebRequest`, which don't add the quarantine flag, but a binary downloaded with a browser may need `xattr -d com.apple.quarantine`.
 - If Codex crashes and SessionEnd never runs, the window stays open. Close it with ✕.
-- Plugin hooks need a Codex version with plugin hooks (tested with codex-cli 0.162.1), and you must trust them once with `/hooks`.
+- Tested end to end with codex-cli 0.162.1 on Linux/X11. The MCP path needs `node` on PATH. The hook fallback needs `/hooks` trust and only starts on the first prompt.
+- On Linux without a compositor, the rounded window corners render as white squares.
 
 ## Codex plugin integration: what is and isn't possible
 
@@ -91,7 +96,8 @@ Based on `openai/codex` main (Oct 2026):
 | Possible ✅ | Source |
 |---|---|
 | A plugin can ship lifecycle hooks: `.codex-plugin/plugin.json` → `"hooks": "./hooks/hooks.json"` | `codex-rs/core-plugins/src/manifest.rs` (`resolve_manifest_hooks`) |
-| `SessionStart` / `SessionEnd` events (plus PreToolUse, PostToolUse, Stop, …) | `codex-rs/protocol/src/protocol.rs` `enum HookEventName` |
+| `SessionStart` / `SessionEnd` events (plus PreToolUse, PostToolUse, Stop, …). SessionStart only fires on the first turn | `codex-rs/protocol/src/protocol.rs` `enum HookEventName`, `codex-rs/core/src/session/turn.rs` |
+| Plugin MCP servers (`.mcp.json`) start when the session boots and stop when it exits, so they give an exact window lifetime. Set `"cwd": "."` so relative paths resolve to the plugin root, and use `env_vars` to pass `DISPLAY`, `TEMP` and so on | `codex-rs/codex-mcp/src/plugin_config.rs`, `codex-rs/rmcp-client/src/utils.rs` (`DEFAULT_ENV_VARS`) |
 | Hook commands get `PLUGIN_ROOT` / `PLUGIN_DATA` env vars; there is a separate `commandWindows` command | `codex-rs/hooks/src/engine/discovery.rs`, `codex-rs/config/src/hook_config.rs` |
 | A hook can start a long-lived process if it detaches: Codex kills the hook's process group (Unix) or Job Object (Windows, created with `JOB_OBJECT_LIMIT_BREAKAWAY_OK`) | `codex-rs/hooks/src/engine/command_runner.rs` (`ProcessTreeGuard`), `codex-rs/utils/pty/src/win/job.rs` |
 | Install from a Git marketplace (`.agents/plugins/marketplace.json`) | `codex-rs/core-plugins/src/marketplace.rs`, `codex-rs/cli/src/marketplace_cmd.rs` |
@@ -99,7 +105,8 @@ Based on `openai/codex` main (Oct 2026):
 | Not possible ❌ |
 |---|
 | There is no hook or event for "image pasted", and plugins can't draw inside the TUI or composer, so the preview has to be a separate window. |
-| Plugin hooks are skipped until the user trusts them (`/hooks`), so the first run needs one manual step. |
+| Plugin hooks are skipped until the user trusts them (`/hooks`). The MCP path avoids this. |
+| An MCP server has a single `command` for all OSes (no `commandWindows`), so the plugin uses `node` as the cross-platform launcher. |
 | `SessionEnd` hook timeouts are clamped to 3 s, so the stop hook only sends a message to the window. |
 | A plugin can't bundle native binaries per OS, so the hook script downloads them from GitHub Releases. |
 

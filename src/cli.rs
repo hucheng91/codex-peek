@@ -13,6 +13,8 @@ pub enum Mode {
     HookStart,
     /// Codex SessionEnd hook: unregister session; window exits when none remain.
     HookStop,
+    /// Minimal MCP stdio server used by the Codex plugin to tie the window to a session.
+    Mcp,
     Help,
     Version,
 }
@@ -41,6 +43,7 @@ OPTIONS:
   --port <N>          Localhost control port (default 47821)
   --hook-start        Codex SessionStart hook entry point (reads JSON on stdin)
   --hook-stop         Codex SessionEnd hook entry point (reads JSON on stdin)
+  --mcp               Run as a Codex plugin MCP server (window lives as long as the session)
   -h, --help          Show help
   -V, --version       Show version
 ";
@@ -85,6 +88,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Options, String>
             "--managed" => o.managed = true,
             "--hook-start" => o.mode = Mode::HookStart,
             "--hook-stop" => o.mode = Mode::HookStop,
+            "--mcp" => o.mode = Mode::Mcp,
             "-h" | "--help" => o.mode = Mode::Help,
             "-V" | "--version" => o.mode = Mode::Version,
             other => return Err(format!("unknown argument: {other}")),
