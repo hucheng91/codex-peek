@@ -6,11 +6,20 @@ Codex's TUI shows pasted images only as `[Image #1]`, `[Image #2]`… placeholde
 
 [中文说明](README.zh-CN.md)
 
-![screenshot](docs/screenshot.png)
+<p align="center">
+  <a href="docs/demo-real-codex.mp4"><img src="docs/demo-real-codex.gif" width="900" alt="codex-peek with the real Codex CLI"></a>
+  <br><sub>Real Codex CLI 0.162.1 TUI: window opens with the session, 3× Ctrl+V, enlarge, Clear, closes on /quit · <a href="docs/demo-real-codex.mp4">MP4 (28 s)</a></sub>
+</p>
 
-![demo](docs/demo.gif)
+<p align="center">
+  <video src="https://raw.githubusercontent.com/hucheng91/codex-peek/main/docs/demo-real-codex.mp4" controls muted width="900"></video>
+</p>
 
-▶️ **[Video: codex-peek with the real Codex CLI 0.162.1 TUI](docs/demo-real-codex.mp4)** (28 s). It shows the window opening when the session starts, three Ctrl+V pastes, enlarge, Clear, and the window closing on `/quit`.
+<p align="center">
+  <img src="docs/screenshot.png" width="450" alt="codex-peek screenshot">
+  &nbsp;
+  <img src="docs/demo.gif" width="450" alt="codex-peek demo">
+</p>
 
 - Native OS webview (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux) via [wry](https://github.com/tauri-apps/wry) + [tao](https://github.com/tauri-apps/tao). No Electron; the binary is **about 0.8 MB** (Linux x64 release build, measured), and macOS/Windows builds are in the same range (see the CI "Binary size" step).
 - Numbered thumbnails (`Image #1..N`) in arrival order; click to enlarge, click again to go back.

@@ -6,11 +6,20 @@ Codex 的终端界面里，粘贴的图片只显示成 `[Image #1]`、`[Image #2
 
 [English](README.md)
 
-![截图](docs/screenshot.png)
+<p align="center">
+  <a href="docs/demo-real-codex.mp4"><img src="docs/demo-real-codex.gif" width="900" alt="codex-peek 与真实 Codex CLI"></a>
+  <br><sub>真实 Codex CLI 0.162.1：会话开始自动打开窗口，3 次 Ctrl+V，放大，清空，/quit 后自动关闭 · <a href="docs/demo-real-codex.mp4">MP4（28 秒）</a></sub>
+</p>
 
-![演示](docs/demo.gif)
+<p align="center">
+  <video src="https://raw.githubusercontent.com/hucheng91/codex-peek/main/docs/demo-real-codex.mp4" controls muted width="900"></video>
+</p>
 
-▶️ **[视频：与真实 Codex CLI 0.162.1 配合使用](docs/demo-real-codex.mp4)**
+<p align="center">
+  <img src="docs/screenshot.png" width="450" alt="codex-peek 截图">
+  &nbsp;
+  <img src="docs/demo.gif" width="450" alt="codex-peek 演示">
+</p>
 
 - 使用系统自带的 WebView（macOS 用 WKWebView，Windows 用 WebView2，Linux 用 WebKitGTK），基于 wry + tao。不用 Electron，Linux x64 实测二进制约 **0.8 MB**。
 - 缩略图按出现顺序编号 `Image #1..N`，点击放大，再点一次返回。
